@@ -13,5 +13,5 @@ egui = "0.37.0"
 mp4 = "0.14.0"
 openh264 = "0.9.9"
 raw-window-handle = "0.6.2"
-scrap = "0.5.0"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Graphics_Dxgi"] }
+windows-capture = "2.0.1"

@@ -1,9 +1,8 @@
-//! Módulo de gravação de tela com codificação MP4 H.264
+//! Módulo de gravação de tela com Windows Graphics Capture (WGC) e codificação H.264 / MP4
 
 use chrono::Local;
 use openh264::encoder::Encoder;
 use openh264::formats::YUVSource;
-use scrap::{Capturer, Display};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -11,6 +10,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use windows_capture::{
+    capture::{Context, GraphicsCaptureApiHandler},
+    frame::Frame,
+    graphics_capture_api::InternalCaptureControl,
+    monitor::Monitor,
+    settings::{
+        ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+        MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+    },
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CaptureArea {
@@ -51,7 +60,7 @@ impl RecorderController {
         let path_clone = output_path.clone();
 
         let handle = thread::spawn(move || {
-            run_recording_pipeline(config, path_clone, stop_clone, pause_clone)
+            run_wgc_pipeline(config, path_clone, stop_clone, pause_clone)
         });
 
         Ok(Self {
@@ -79,7 +88,7 @@ impl RecorderController {
         if let Some(h) = self.handle.take() {
             match h.join() {
                 Ok(res) => res,
-                Err(_) => Err("A thread de gravação encontrou um erro crítico".to_string()),
+                Err(_) => Err("A thread de gravação encerrou inesperadamente".to_string()),
             }
         } else {
             Ok(self.output_path)
@@ -124,41 +133,45 @@ impl YUVSource for YuvFrame {
     }
 }
 
-fn bgra_to_yuv420p_crop(
-    bgra: &[u8],
-    screen_width: usize,
-    screen_height: usize,
+/// Converte RGBA (fornecido por ColorFormat::Rgba8 da WGC) em YUV420p recortado
+fn rgba_to_yuv420p_crop(
+    rgba: &[u8],
+    frame_width: usize,
+    frame_height: usize,
     crop: &CaptureArea,
 ) -> YuvFrame {
-    let crop_x = (crop.x as usize).min(screen_width.saturating_sub(2));
-    let crop_y = (crop.y as usize).min(screen_height.saturating_sub(2));
-    let crop_w = ((crop.width as usize).min(screen_width - crop_x)) & !1;
-    let crop_h = ((crop.height as usize).min(screen_height - crop_y)) & !1;
+    let crop_x = (crop.x as usize).min(frame_width.saturating_sub(2));
+    let crop_y = (crop.y as usize).min(frame_height.saturating_sub(2));
+    let crop_w = ((crop.width as usize).min(frame_width - crop_x)) & !1;
+    let crop_h = ((crop.height as usize).min(frame_height - crop_y)) & !1;
 
-    let y_size = crop_w * crop_h;
-    let uv_size = (crop_w / 2) * (crop_h / 2);
+    let target_w = if crop_w < 16 { 16 } else { crop_w };
+    let target_h = if crop_h < 16 { 16 } else { crop_h };
+
+    let y_size = target_w * target_h;
+    let uv_size = (target_w / 2) * (target_h / 2);
 
     let mut y_plane = vec![0u8; y_size];
     let mut u_plane = vec![0u8; uv_size];
     let mut v_plane = vec![0u8; uv_size];
 
-    let uv_w = crop_w / 2;
+    let uv_w = target_w / 2;
 
-    for row in 0..crop_h {
-        let src_row = crop_y + row;
-        let src_row_offset = src_row * screen_width * 4;
-        let y_row_offset = row * crop_w;
+    for row in 0..target_h {
+        let src_row = (crop_y + row).min(frame_height.saturating_sub(1));
+        let src_row_offset = src_row * frame_width * 4;
+        let y_row_offset = row * target_w;
         let is_even_row = (row % 2) == 0;
         let uv_row_offset = (row / 2) * uv_w;
 
-        for col in 0..crop_w {
-            let src_col = crop_x + col;
+        for col in 0..target_w {
+            let src_col = (crop_x + col).min(frame_width.saturating_sub(1));
             let src_idx = src_row_offset + src_col * 4;
 
-            if src_idx + 3 < bgra.len() {
-                let b = bgra[src_idx] as i32;
-                let g = bgra[src_idx + 1] as i32;
-                let r = bgra[src_idx + 2] as i32;
+            if src_idx + 3 < rgba.len() {
+                let r = rgba[src_idx] as i32;
+                let g = rgba[src_idx + 1] as i32;
+                let b = rgba[src_idx + 2] as i32;
 
                 let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
                 y_plane[y_row_offset + col] = y.clamp(0, 255) as u8;
@@ -180,123 +193,178 @@ fn bgra_to_yuv420p_crop(
         y: y_plane,
         u: u_plane,
         v: v_plane,
-        width: crop_w,
-        height: crop_h,
-        y_stride: crop_w,
+        width: target_w,
+        height: target_h,
+        y_stride: target_w,
         u_stride: uv_w,
         v_stride: uv_w,
     }
 }
 
-fn run_recording_pipeline(
-    config: RecorderConfig,
-    output_path: PathBuf,
-    stop_signal: Arc<AtomicBool>,
-    pause_signal: Arc<AtomicBool>,
-) -> Result<PathBuf, String> {
-    let display = Display::primary().map_err(|e| format!("Falha ao acessar monitor: {:?}", e))?;
-    let screen_w = display.width();
-    let screen_h = display.height();
+pub struct CaptureFlags {
+    pub config: RecorderConfig,
+    pub stop_signal: Arc<AtomicBool>,
+    pub pause_signal: Arc<AtomicBool>,
+    pub output_path: PathBuf,
+}
 
-    let mut capturer = Capturer::new(display).map_err(|e| format!("Falha ao iniciar capturador de tela: {:?}", e))?;
+pub struct WgcHandler {
+    flags: CaptureFlags,
+    encoder: Option<Encoder>,
+    mp4_writer: Option<mp4::Mp4Writer<BufWriter<File>>>,
+    frame_count: u64,
+    last_frame_instant: Instant,
+    frame_interval: Duration,
+    is_initialized: bool,
+}
 
-    let crop_w = (config.area.width as usize).min(screen_w) & !1;
-    let crop_h = (config.area.height as usize).min(screen_h) & !1;
+impl GraphicsCaptureApiHandler for WgcHandler {
+    type Flags = CaptureFlags;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
 
-    let target_w = if crop_w < 16 { 16 } else { crop_w };
-    let target_h = if crop_h < 16 { 16 } else { crop_h };
+    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        let fps = if ctx.flags.config.fps == 0 { 30 } else { ctx.flags.config.fps };
+        let frame_interval = Duration::from_millis((1000 / fps) as u64);
 
-    let mut encoder = Encoder::new()
-        .map_err(|e| format!("Falha ao inicializar OpenH264: {:?}", e))?;
+        Ok(Self {
+            flags: ctx.flags,
+            encoder: None,
+            mp4_writer: None,
+            frame_count: 0,
+            last_frame_instant: Instant::now(),
+            frame_interval,
+            is_initialized: false,
+        })
+    }
 
-    let file = File::create(&output_path).map_err(|e| format!("Erro ao criar arquivo de vídeo: {:?}", e))?;
-    let writer = BufWriter::new(file);
+    fn on_frame_arrived(
+        &mut self,
+        frame: &mut Frame,
+        capture_control: InternalCaptureControl,
+    ) -> Result<(), Self::Error> {
+        if self.flags.stop_signal.load(Ordering::SeqCst) {
+            capture_control.stop();
+            return Ok(());
+        }
 
-    let mut mp4_writer = mp4::Mp4Writer::write_start(
-        writer,
-        &mp4::Mp4Config {
-            major_brand: str::parse("isom").unwrap(),
-            minor_version: 512,
-            compatible_brands: vec![
-                str::parse("isom").unwrap(),
-                str::parse("iso2").unwrap(),
-                str::parse("avc1").unwrap(),
-                str::parse("mp41").unwrap(),
-            ],
-            timescale: 1000,
-        },
-    ).map_err(|e| format!("Erro ao criar cabeçalho MP4: {:?}", e))?;
-
-    let fps = if config.fps == 0 { 30 } else { config.fps };
-    let frame_duration_ms = 1000 / fps;
-    let frame_interval = Duration::from_millis(frame_duration_ms as u64);
-
-    let video_track_id = 1u32;
-    mp4_writer.add_track(&mp4::TrackConfig {
-        track_type: mp4::TrackType::Video,
-        timescale: fps * 1000,
-        language: "und".to_string(),
-        media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-            width: target_w as u16,
-            height: target_h as u16,
-            seq_param_set: vec![],
-            pic_param_set: vec![],
-        }),
-    }).map_err(|e| format!("Erro ao adicionar track de vídeo MP4: {:?}", e))?;
-
-    let mut frame_count: u64 = 0;
-    let mut next_frame_time = Instant::now();
-
-    while !stop_signal.load(Ordering::SeqCst) {
-        if pause_signal.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(50));
-            continue;
+        if self.flags.pause_signal.load(Ordering::SeqCst) {
+            return Ok(());
         }
 
         let now = Instant::now();
-        if now < next_frame_time {
-            let sleep_dur = next_frame_time - now;
-            thread::sleep(sleep_dur);
+        if self.is_initialized && now.duration_since(self.last_frame_instant) < self.frame_interval {
+            return Ok(());
         }
-        next_frame_time = Instant::now() + frame_interval;
+        self.last_frame_instant = now;
 
-        let frame_buffer = match capturer.frame() {
-            Ok(buffer) => buffer.to_vec(),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(2));
-                continue;
-            }
-            Err(e) => {
-                eprintln!("Aviso na captura de quadro: {:?}", e);
-                continue;
-            }
-        };
+        let frame_w = frame.width() as usize;
+        let frame_h = frame.height() as usize;
 
-        let yuv = bgra_to_yuv420p_crop(&frame_buffer, screen_w, screen_h, &config.area);
-        
-        match encoder.encode(&yuv) {
-            Ok(bitstream) => {
+        let crop_w = ((self.flags.config.area.width as usize).min(frame_w)) & !1;
+        let crop_h = ((self.flags.config.area.height as usize).min(frame_h)) & !1;
+        let target_w = if crop_w < 16 { 16 } else { crop_w };
+        let target_h = if crop_h < 16 { 16 } else { crop_h };
+
+        if !self.is_initialized {
+            let encoder = Encoder::new()?;
+            let file = File::create(&self.flags.output_path)?;
+            let writer = BufWriter::new(file);
+
+            let mut mp4_writer = mp4::Mp4Writer::write_start(
+                writer,
+                &mp4::Mp4Config {
+                    major_brand: str::parse("isom").unwrap(),
+                    minor_version: 512,
+                    compatible_brands: vec![
+                        str::parse("isom").unwrap(),
+                        str::parse("iso2").unwrap(),
+                        str::parse("avc1").unwrap(),
+                        str::parse("mp41").unwrap(),
+                    ],
+                    timescale: 1000,
+                },
+            )?;
+
+            let fps = if self.flags.config.fps == 0 { 30 } else { self.flags.config.fps };
+            mp4_writer.add_track(&mp4::TrackConfig {
+                track_type: mp4::TrackType::Video,
+                timescale: fps * 1000,
+                language: "und".to_string(),
+                media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+                    width: target_w as u16,
+                    height: target_h as u16,
+                    seq_param_set: vec![],
+                    pic_param_set: vec![],
+                }),
+            })?;
+
+            self.encoder = Some(encoder);
+            self.mp4_writer = Some(mp4_writer);
+            self.is_initialized = true;
+        }
+
+        let mut raw_buffer = frame.buffer()?;
+        let rgba_data = raw_buffer.as_raw_buffer();
+
+        let yuv = rgba_to_yuv420p_crop(rgba_data, frame_w, frame_h, &self.flags.config.area);
+
+        if let (Some(encoder), Some(writer)) = (&mut self.encoder, &mut self.mp4_writer) {
+            if let Ok(bitstream) = encoder.encode(&yuv) {
                 let stream_bytes = bitstream.to_vec();
                 if !stream_bytes.is_empty() {
                     let is_sync = stream_bytes.windows(4).any(|w| (w[4 - 1] & 0x1F) == 5);
                     let sample = mp4::Mp4Sample {
-                        start_time: frame_count * 1000,
+                        start_time: self.frame_count * 1000,
                         duration: 1000,
                         rendering_offset: 0,
                         is_sync,
                         bytes: mp4::Bytes::from(stream_bytes),
                     };
 
-                    let _ = mp4_writer.write_sample(video_track_id, &sample);
-                    frame_count += 1;
+                    let _ = writer.write_sample(1u32, &sample);
+                    self.frame_count += 1;
                 }
             }
-            Err(e) => {
-                eprintln!("Aviso ao codificar frame com H264: {:?}", e);
-            }
         }
+
+        Ok(())
     }
 
-    mp4_writer.write_end().map_err(|e| format!("Erro ao finalizar arquivo MP4: {:?}", e))?;
+    fn on_closed(&mut self) -> Result<(), Self::Error> {
+        if let Some(mut writer) = self.mp4_writer.take() {
+            let _ = writer.write_end();
+        }
+        Ok(())
+    }
+}
+
+fn run_wgc_pipeline(
+    config: RecorderConfig,
+    output_path: PathBuf,
+    stop_signal: Arc<AtomicBool>,
+    pause_signal: Arc<AtomicBool>,
+) -> Result<PathBuf, String> {
+    let monitor = Monitor::primary().map_err(|e| format!("Falha ao obter monitor principal: {:?}", e))?;
+
+    let flags = CaptureFlags {
+        config,
+        stop_signal,
+        pause_signal,
+        output_path: output_path.clone(),
+    };
+
+    let settings = Settings::new(
+        monitor,
+        CursorCaptureSettings::Default,
+        DrawBorderSettings::WithoutBorder,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
+        ColorFormat::Rgba8,
+        flags,
+    );
+
+    WgcHandler::start(settings).map_err(|e| format!("Erro na captura WGC: {:?}", e))?;
+
     Ok(output_path)
 }
