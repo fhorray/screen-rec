@@ -8,7 +8,7 @@ chrono = "0.4.45"
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
-eframe = { version = "0.37.0", features = ["glow"] }
+eframe = { version = "0.37.0", features = ["glow"], default-features = false }
 egui = "0.37.0"
 mp4 = "0.14.0"
 openh264 = "0.9.9"
@@ -16,3 +16,10 @@ raw-window-handle = "0.6.2"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Graphics_Dxgi"] }
 windows-capture = "2.0.1"
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
