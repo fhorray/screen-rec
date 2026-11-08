@@ -3,15 +3,17 @@
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND as WIN_HWND;
 #[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::ScreenToClient;
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowDisplayAffinity, WINDOW_DISPLAY_AFFINITY,
 };
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HWND, POINT};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 #[cfg(target_os = "windows")]
@@ -31,8 +33,28 @@ pub fn exclude_window_from_capture(_hwnd_ptr: isize) -> bool {
     false
 }
 
-/// Ativa ou desativa a passagem de cliques (click-through) para que o usuário possa
-/// interagir livremente com todas as janelas do Windows que estiverem por trás
+#[cfg(target_os = "windows")]
+pub fn get_client_cursor_pos(hwnd_ptr: isize) -> Option<(f32, f32)> {
+    let hwnd = WIN_HWND(hwnd_ptr as _);
+    let mut pt = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+    unsafe {
+        let sys_pt = &mut pt as *mut _ as *mut POINT;
+        if GetCursorPos(sys_pt) == 0 {
+            return None;
+        }
+        if !ScreenToClient(hwnd, &mut pt).as_bool() {
+            return None;
+        }
+    }
+    Some((pt.x as f32, pt.y as f32))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn get_client_cursor_pos(_hwnd_ptr: isize) -> Option<(f32, f32)> {
+    None
+}
+
+/// Ativa ou desativa a passagem de cliques (click-through)
 #[cfg(target_os = "windows")]
 pub fn set_click_through(hwnd_ptr: isize, enable: bool) {
     let hwnd = hwnd_ptr as HWND;

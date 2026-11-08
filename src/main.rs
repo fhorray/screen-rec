@@ -502,16 +502,25 @@ impl eframe::App for ScreenRecorderApp {
         }
 
         // --- CONTROLE DINÂMICO DE CLICK-THROUGH NO WINDOWS ---
-        // Quando gravando (ou quando o mouse estiver fora dos controles/alças), as janelas do Windows recebem cliques normalmente!
         if current_hwnd != 0 {
-            let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
+            // Em modo transparente (passthrough), o egui não recebe eventos do mouse e portanto não redesenha sozinho.
+            // Solicitamos repaint contínuo com intervalo curto para rastrear o cursor físico via Windows API.
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+
+            let ppp = ctx.pixels_per_point();
+            // Lê a posição física real do cursor através da API do Windows para evitar perda de hover em modo passthrough
+            let pointer_pos = window_exclude::get_client_cursor_pos(current_hwnd)
+                .map(|(x, y)| egui::pos2(x / ppp, y / ppp))
+                .or_else(|| ctx.input(|i| i.pointer.hover_pos()));
+
             let is_hovering_interactive_part = if let Some(pos) = pointer_pos {
                 let over_toolbar = toolbar_rect.contains(pos);
                 let over_presets = self.show_presets_menu && presets_pop_rect.contains(pos);
                 let over_settings = self.show_settings && settings_pop_rect.contains(pos);
                 let over_center_handle = center_handle_rect.contains(pos);
-                let over_crop_boundary = !is_recording && self.is_selecting_area && (
-                    self.area_rect.expand(6.0).contains(pos) && !self.area_rect.shrink(6.0).contains(pos)
+                // Borda de ajuste: 12 pixels de tolerância ao redor da linha verde
+                let over_crop_boundary = !is_recording && (
+                    self.area_rect.expand(12.0).contains(pos) && !self.area_rect.shrink(12.0).contains(pos)
                 );
 
                 over_toolbar || over_presets || over_settings || over_center_handle || over_crop_boundary
@@ -519,11 +528,12 @@ impl eframe::App for ScreenRecorderApp {
                 false
             };
 
-            // Durante a gravação, somente a barra de ferramentas intercepta cliques (o resto da tela passa direto para o Windows!)
-            let should_pass_through = if is_recording {
-                !is_hovering_interactive_part
+            // Se o usuário estiver arrastando/redimensionando ou com o mouse sobre um controle/borda/centro:
+            // Intercepta para o nosso app. Se estiver fora ou dentro do retângulo livre: passa direto para o Windows!
+            let should_pass_through = if self.drag_mode != DragMode::None {
+                false
             } else {
-                !is_hovering_interactive_part && self.drag_mode == DragMode::None
+                !is_hovering_interactive_part
             };
 
             if self.last_passthrough_state != Some(should_pass_through) {
