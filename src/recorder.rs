@@ -21,6 +21,7 @@ pub struct CaptureArea {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct RecorderConfig {
     pub area: CaptureArea,
     pub fps: u32,

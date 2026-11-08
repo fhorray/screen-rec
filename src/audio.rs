@@ -1,5 +1,7 @@
 //! Módulo de captura de áudio com suporte a microfone
 
+#![allow(dead_code)]
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 use std::sync::atomic::{AtomicBool, Ordering};
