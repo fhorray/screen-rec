@@ -101,7 +101,6 @@ impl RecorderController {
     pub fn stop(mut self) -> Result<PathBuf, String> {
         self.stop_signal.store(true, Ordering::SeqCst);
         if let Some(ctrl) = self.control.take() {
-            // Encerra a thread de captura de forma limpa e aguarda o fechamento seguro
             let _ = ctrl.stop();
         }
         Ok(self.output_path)
@@ -147,6 +146,7 @@ impl YUVSource for YuvFrame {
 
 fn rgba_to_yuv420p_crop(
     rgba: &[u8],
+    row_pitch: usize,
     frame_width: usize,
     frame_height: usize,
     crop: &CaptureArea,
@@ -170,7 +170,8 @@ fn rgba_to_yuv420p_crop(
 
     for row in 0..target_h {
         let src_row = (crop_y + row).min(frame_height.saturating_sub(1));
-        let src_row_offset = src_row * frame_width * 4;
+        // Usa row_pitch da GPU para indexar as linhas sem corromper memória
+        let src_row_offset = src_row * row_pitch;
         let y_row_offset = row * target_w;
         let is_even_row = (row % 2) == 0;
         let uv_row_offset = (row / 2) * uv_w;
@@ -212,6 +213,75 @@ fn rgba_to_yuv420p_crop(
     }
 }
 
+/// Converte o bitstream H.264 do formato Annex B (00 00 00 01) para AVCC (comprimento de 4 bytes)
+/// e extrai os parâmetros SPS e PPS para o cabeçalho do arquivo MP4
+fn split_annex_b_to_avcc(annex_b: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, bool) {
+    let mut avcc_payload = Vec::with_capacity(annex_b.len() + 16);
+    let mut sps = Vec::new();
+    let mut pps = Vec::new();
+    let mut is_keyframe = false;
+
+    let mut nalu_indices = Vec::new();
+    let mut i = 0;
+    while i < annex_b.len() {
+        if i + 3 < annex_b.len() && annex_b[i] == 0 && annex_b[i + 1] == 0 && annex_b[i + 2] == 0 && annex_b[i + 3] == 1 {
+            nalu_indices.push((i, 4));
+            i += 4;
+        } else if i + 2 < annex_b.len() && annex_b[i] == 0 && annex_b[i + 1] == 0 && annex_b[i + 2] == 1 {
+            nalu_indices.push((i, 3));
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+
+    for idx in 0..nalu_indices.len() {
+        let (start, prefix_len) = nalu_indices[idx];
+        let payload_start = start + prefix_len;
+        let payload_end = if idx + 1 < nalu_indices.len() {
+            nalu_indices[idx + 1].0
+        } else {
+            annex_b.len()
+        };
+
+        if payload_start < payload_end {
+            let nalu = &annex_b[payload_start..payload_end];
+            let nalu_type = nalu[0] & 0x1F;
+
+            match nalu_type {
+                7 => {
+                    if sps.is_empty() {
+                        sps = nalu.to_vec();
+                    }
+                }
+                8 => {
+                    if pps.is_empty() {
+                        pps = nalu.to_vec();
+                    }
+                }
+                5 => {
+                    is_keyframe = true;
+                    let len = nalu.len() as u32;
+                    avcc_payload.extend_from_slice(&len.to_be_bytes());
+                    avcc_payload.extend_from_slice(nalu);
+                }
+                1 => {
+                    let len = nalu.len() as u32;
+                    avcc_payload.extend_from_slice(&len.to_be_bytes());
+                    avcc_payload.extend_from_slice(nalu);
+                }
+                _ => {
+                    let len = nalu.len() as u32;
+                    avcc_payload.extend_from_slice(&len.to_be_bytes());
+                    avcc_payload.extend_from_slice(nalu);
+                }
+            }
+        }
+    }
+
+    (avcc_payload, sps, pps, is_keyframe)
+}
+
 pub struct CaptureFlags {
     pub config: RecorderConfig,
     pub stop_signal: Arc<AtomicBool>,
@@ -227,6 +297,8 @@ pub struct WgcHandler {
     last_frame_instant: Instant,
     frame_interval: Duration,
     is_initialized: bool,
+    target_width: u16,
+    target_height: u16,
 }
 
 impl GraphicsCaptureApiHandler for WgcHandler {
@@ -237,14 +309,18 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         let fps = if ctx.flags.config.fps == 0 { 30 } else { ctx.flags.config.fps };
         let frame_interval = Duration::from_millis((1000 / fps) as u64);
 
+        let encoder = Encoder::new()?;
+
         Ok(Self {
             flags: ctx.flags,
-            encoder: None,
+            encoder: Some(encoder),
             mp4_writer: None,
             frame_count: 0,
             last_frame_instant: Instant::now(),
             frame_interval,
             is_initialized: false,
+            target_width: 1280,
+            target_height: 720,
         })
     }
 
@@ -273,67 +349,80 @@ impl GraphicsCaptureApiHandler for WgcHandler {
 
         let crop_w = ((self.flags.config.area.width as usize).min(frame_w)) & !1;
         let crop_h = ((self.flags.config.area.height as usize).min(frame_h)) & !1;
-        let target_w = if crop_w < 16 { 16 } else { crop_w };
-        let target_h = if crop_h < 16 { 16 } else { crop_h };
+        let target_w = (if crop_w < 16 { 16 } else { crop_w }) as u16;
+        let target_h = (if crop_h < 16 { 16 } else { crop_h }) as u16;
 
-        if !self.is_initialized {
-            let encoder = Encoder::new()?;
-            let file = File::create(&self.flags.output_path)?;
-            let writer = BufWriter::new(file);
+        self.target_width = target_w;
+        self.target_height = target_h;
 
-            let mut mp4_writer = mp4::Mp4Writer::write_start(
-                writer,
-                &mp4::Mp4Config {
-                    major_brand: str::parse("isom").unwrap(),
-                    minor_version: 512,
-                    compatible_brands: vec![
-                        str::parse("isom").unwrap(),
-                        str::parse("iso2").unwrap(),
-                        str::parse("avc1").unwrap(),
-                        str::parse("mp41").unwrap(),
-                    ],
-                    timescale: 1000,
-                },
-            )?;
+        let mut buffer = match frame.buffer() {
+            Ok(b) => b,
+            Err(_) => return Ok(()),
+        };
 
-            let fps = if self.flags.config.fps == 0 { 30 } else { self.flags.config.fps };
-            mp4_writer.add_track(&mp4::TrackConfig {
-                track_type: mp4::TrackType::Video,
-                timescale: fps * 1000,
-                language: "und".to_string(),
-                media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-                    width: target_w as u16,
-                    height: target_h as u16,
-                    seq_param_set: vec![],
-                    pic_param_set: vec![],
-                }),
-            })?;
+        let row_pitch = buffer.row_pitch() as usize;
+        let rgba_data = buffer.as_raw_buffer();
 
-            self.encoder = Some(encoder);
-            self.mp4_writer = Some(mp4_writer);
-            self.is_initialized = true;
-        }
+        let yuv = rgba_to_yuv420p_crop(rgba_data, row_pitch, frame_w, frame_h, &self.flags.config.area);
 
-        let mut raw_buffer = frame.buffer()?;
-        let rgba_data = raw_buffer.as_raw_buffer();
-
-        let yuv = rgba_to_yuv420p_crop(rgba_data, frame_w, frame_h, &self.flags.config.area);
-
-        if let (Some(encoder), Some(writer)) = (&mut self.encoder, &mut self.mp4_writer) {
+        if let Some(encoder) = &mut self.encoder {
             if let Ok(bitstream) = encoder.encode(&yuv) {
                 let stream_bytes = bitstream.to_vec();
                 if !stream_bytes.is_empty() {
-                    let is_sync = stream_bytes.windows(4).any(|w| (w[4 - 1] & 0x1F) == 5);
-                    let sample = mp4::Mp4Sample {
-                        start_time: self.frame_count * 1000,
-                        duration: 1000,
-                        rendering_offset: 0,
-                        is_sync,
-                        bytes: mp4::Bytes::from(stream_bytes),
-                    };
+                    let (avcc_data, sps, pps, is_key) = split_annex_b_to_avcc(&stream_bytes);
 
-                    let _ = writer.write_sample(1u32, &sample);
-                    self.frame_count += 1;
+                    // Inicializa o arquivo MP4 assim que os parâmetros SPS/PPS estiverem disponíveis
+                    if !self.is_initialized {
+                        if !sps.is_empty() && !pps.is_empty() {
+                            if let Ok(file) = File::create(&self.flags.output_path) {
+                                let writer = BufWriter::new(file);
+                                if let Ok(mut mp4_writer) = mp4::Mp4Writer::write_start(
+                                    writer,
+                                    &mp4::Mp4Config {
+                                        major_brand: str::parse("isom").unwrap(),
+                                        minor_version: 512,
+                                        compatible_brands: vec![
+                                            str::parse("isom").unwrap(),
+                                            str::parse("iso2").unwrap(),
+                                            str::parse("avc1").unwrap(),
+                                            str::parse("mp41").unwrap(),
+                                        ],
+                                        timescale: 1000,
+                                    },
+                                ) {
+                                    let fps = if self.flags.config.fps == 0 { 30 } else { self.flags.config.fps };
+                                    let _ = mp4_writer.add_track(&mp4::TrackConfig {
+                                        track_type: mp4::TrackType::Video,
+                                        timescale: fps * 1000,
+                                        language: "und".to_string(),
+                                        media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+                                            width: self.target_width,
+                                            height: self.target_height,
+                                            seq_param_set: sps,
+                                            pic_param_set: pps,
+                                        }),
+                                    });
+                                    self.mp4_writer = Some(mp4_writer);
+                                    self.is_initialized = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(writer) = &mut self.mp4_writer {
+                        if !avcc_data.is_empty() {
+                            let sample = mp4::Mp4Sample {
+                                start_time: self.frame_count * 1000,
+                                duration: 1000,
+                                rendering_offset: 0,
+                                is_sync: is_key,
+                                bytes: mp4::Bytes::from(avcc_data),
+                            };
+
+                            let _ = writer.write_sample(1u32, &sample);
+                            self.frame_count += 1;
+                        }
+                    }
                 }
             }
         }
