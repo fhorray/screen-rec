@@ -103,6 +103,8 @@ impl RecorderController {
         if let Some(ctrl) = self.control.take() {
             let _ = ctrl.stop();
         }
+        // Aguarda brevemente para que a thread de captura finalize o flush e escreva o moov atom no MP4
+        std::thread::sleep(Duration::from_millis(250));
         Ok(self.output_path)
     }
 
@@ -435,5 +437,13 @@ impl GraphicsCaptureApiHandler for WgcHandler {
             let _ = writer.write_end();
         }
         Ok(())
+    }
+}
+
+impl Drop for WgcHandler {
+    fn drop(&mut self) {
+        if let Some(mut writer) = self.mp4_writer.take() {
+            let _ = writer.write_end();
+        }
     }
 }

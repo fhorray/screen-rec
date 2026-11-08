@@ -397,7 +397,7 @@ impl eframe::App for ScreenRecorderApp {
 
         // Retângulo delimitador da barra de ferramentas para hit-testing
         let bar_pos = egui::pos2(24.0, 24.0);
-        let toolbar_rect = egui::Rect::from_min_size(bar_pos, egui::vec2(220.0, 42.0));
+        let toolbar_rect = egui::Rect::from_min_size(bar_pos, egui::vec2(260.0, 42.0));
         let presets_pop_rect = egui::Rect::from_min_size(bar_pos + egui::vec2(44.0, 36.0), egui::vec2(180.0, 160.0));
         let settings_pop_rect = egui::Rect::from_min_size(bar_pos + egui::vec2(96.0, 36.0), egui::vec2(200.0, 120.0));
 
@@ -627,6 +627,27 @@ impl eframe::App for ScreenRecorderApp {
                                 let _ = std::process::Command::new("explorer").arg(parent).spawn();
                             }
                         }
+                    }
+
+                    // Botão Fechar App (X)
+                    let (close_rect, close_resp) = ui.allocate_exact_size(egui::vec2(22.0, 24.0), egui::Sense::click());
+                    if ui.is_rect_visible(close_rect) {
+                        let hover = close_resp.hovered();
+                        let bg = if hover { egui::Color32::from_rgb(220, 38, 38) } else { egui::Color32::TRANSPARENT };
+                        ui.painter().rect_filled(close_rect, 5.0, bg);
+                        ui.painter().text(
+                            close_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "✕",
+                            egui::FontId::proportional(12.0),
+                            if hover { egui::Color32::WHITE } else { egui::Color32::from_gray(200) },
+                        );
+                    }
+                    if close_resp.on_hover_text("Close screen recorder").clicked() {
+                        if let Some(ctrl) = self.controller.take() {
+                            let _ = ctrl.stop();
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
             });
