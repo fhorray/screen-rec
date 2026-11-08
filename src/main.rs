@@ -23,7 +23,14 @@ enum AreaPreset {
 enum DragMode {
     None,
     Moving,
-    ResizingCorner,
+    ResizeLeft,
+    ResizeRight,
+    ResizeTop,
+    ResizeBottom,
+    ResizeTopLeft,
+    ResizeTopRight,
+    ResizeBottomLeft,
+    ResizeBottomRight,
     NewSelection,
 }
 
@@ -333,16 +340,21 @@ impl eframe::App for ScreenRecorderApp {
         let stroke = egui::Stroke::new(2.0, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-        // Marcadores nos 4 cantos para redimensionamento
-        let corners = [
+        // Marcadores nos 4 cantos e no meio das 4 bordas para redimensionamento
+        let handle_sz = egui::vec2(7.0, 7.0);
+        let handles = [
             self.area_rect.left_top(),
             self.area_rect.right_top(),
             self.area_rect.left_bottom(),
             self.area_rect.right_bottom(),
+            self.area_rect.center_top(),
+            self.area_rect.center_bottom(),
+            self.area_rect.left_center(),
+            self.area_rect.right_center(),
         ];
-        for c in corners {
+        for h in handles {
             painter.rect_filled(
-                egui::Rect::from_center_size(c, egui::vec2(6.0, 6.0)),
+                egui::Rect::from_center_size(h, handle_sz),
                 1.0,
                 border_color,
             );
@@ -350,15 +362,14 @@ impl eframe::App for ScreenRecorderApp {
 
         // Ícone / Handle de arrastar (Drag to Move) no centro da área selecionada
         let center = self.area_rect.center();
-        let center_handle_rect = egui::Rect::from_center_size(center, egui::vec2(32.0, 32.0));
-        painter.circle_filled(center, 16.0, egui::Color32::from_black_alpha(190));
-        painter.circle_stroke(center, 16.0, egui::Stroke::new(1.5, border_color));
-        // Ícone em cruz de setas de movimento ✥
+        let center_handle_rect = egui::Rect::from_center_size(center, egui::vec2(36.0, 36.0));
+        painter.circle_filled(center, 18.0, egui::Color32::from_black_alpha(200));
+        painter.circle_stroke(center, 18.0, egui::Stroke::new(1.8, border_color));
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
             "✥",
-            egui::FontId::proportional(16.0),
+            egui::FontId::proportional(18.0),
             egui::Color32::WHITE,
         );
 
@@ -378,7 +389,7 @@ impl eframe::App for ScreenRecorderApp {
             egui::Color32::from_gray(230),
         );
 
-        // Interação de Arrastar para selecionar área ou mover a área existente
+        // Interação de Arrastar para selecionar área, mover ou ajustar bordas
         if self.is_selecting_area && !is_recording {
             let pointer = ctx.input(|i| i.pointer.clone());
             if pointer.primary_down() {
@@ -386,25 +397,89 @@ impl eframe::App for ScreenRecorderApp {
                     match self.drag_mode {
                         DragMode::None => {
                             self.drag_start = pos;
-                            let corner_rect = egui::Rect::from_center_size(self.area_rect.right_bottom(), egui::vec2(28.0, 28.0));
-                            if center_handle_rect.contains(pos) || self.area_rect.contains(pos) {
-                                // Arrastar pelo meio (ou dentro da área) move toda a área sem precisar selecionar novamente
+                            let hit = 14.0;
+                            let r = self.area_rect;
+
+                            if center_handle_rect.contains(pos) {
                                 self.drag_mode = DragMode::Moving;
-                            } else if corner_rect.contains(pos) {
-                                self.drag_mode = DragMode::ResizingCorner;
+                            } else if egui::Rect::from_center_size(r.left_top(), egui::vec2(hit, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeTopLeft;
+                            } else if egui::Rect::from_center_size(r.right_top(), egui::vec2(hit, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeTopRight;
+                            } else if egui::Rect::from_center_size(r.left_bottom(), egui::vec2(hit, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeBottomLeft;
+                            } else if egui::Rect::from_center_size(r.right_bottom(), egui::vec2(hit, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeBottomRight;
+                            } else if egui::Rect::from_center_size(r.center_top(), egui::vec2(hit * 2.0, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeTop;
+                            } else if egui::Rect::from_center_size(r.center_bottom(), egui::vec2(hit * 2.0, hit)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeBottom;
+                            } else if egui::Rect::from_center_size(r.left_center(), egui::vec2(hit, hit * 2.0)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeLeft;
+                            } else if egui::Rect::from_center_size(r.right_center(), egui::vec2(hit, hit * 2.0)).contains(pos) {
+                                self.drag_mode = DragMode::ResizeRight;
+                            } else if self.area_rect.contains(pos) {
+                                self.drag_mode = DragMode::Moving;
                             } else {
                                 self.drag_mode = DragMode::NewSelection;
                                 self.area_rect = egui::Rect::from_min_max(pos, pos);
                             }
                         }
-                        DragMode::ResizingCorner => {
+                        DragMode::Moving => {
+                            let delta = pointer.delta();
+                            self.area_rect = self.area_rect.translate(delta);
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeRight => {
+                            let min = self.area_rect.min;
+                            let max_y = self.area_rect.max.y;
+                            self.area_rect = egui::Rect::from_min_max(min, egui::pos2(pos.x.max(min.x + 64.0), max_y));
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeLeft => {
+                            let max = self.area_rect.max;
+                            let min_y = self.area_rect.min.y;
+                            self.area_rect = egui::Rect::from_min_max(egui::pos2(pos.x.min(max.x - 64.0), min_y), max);
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeBottom => {
+                            let min = self.area_rect.min;
+                            let max_x = self.area_rect.max.x;
+                            self.area_rect = egui::Rect::from_min_max(min, egui::pos2(max_x, pos.y.max(min.y + 64.0)));
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeTop => {
+                            let max = self.area_rect.max;
+                            let min_x = self.area_rect.min.x;
+                            self.area_rect = egui::Rect::from_min_max(egui::pos2(min_x, pos.y.min(max.y - 64.0)), max);
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeBottomRight => {
                             let min = self.area_rect.min;
                             self.area_rect = egui::Rect::from_min_max(min, egui::pos2(pos.x.max(min.x + 64.0), pos.y.max(min.y + 64.0)));
                             self.selected_preset = AreaPreset::Custom;
                         }
-                        DragMode::Moving => {
-                            let delta = pointer.delta();
-                            self.area_rect = self.area_rect.translate(delta);
+                        DragMode::ResizeTopLeft => {
+                            let max = self.area_rect.max;
+                            self.area_rect = egui::Rect::from_min_max(egui::pos2(pos.x.min(max.x - 64.0), pos.y.min(max.y - 64.0)), max);
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeTopRight => {
+                            let min_x = self.area_rect.min.x;
+                            let max_y = self.area_rect.max.y;
+                            self.area_rect = egui::Rect::from_min_max(
+                                egui::pos2(min_x, pos.y.min(max_y - 64.0)),
+                                egui::pos2(pos.x.max(min_x + 64.0), max_y),
+                            );
+                            self.selected_preset = AreaPreset::Custom;
+                        }
+                        DragMode::ResizeBottomLeft => {
+                            let max_x = self.area_rect.max.x;
+                            let min_y = self.area_rect.min.y;
+                            self.area_rect = egui::Rect::from_min_max(
+                                egui::pos2(pos.x.min(max_x - 64.0), min_y),
+                                egui::pos2(max_x, pos.y.max(min_y + 64.0)),
+                            );
                             self.selected_preset = AreaPreset::Custom;
                         }
                         DragMode::NewSelection => {
