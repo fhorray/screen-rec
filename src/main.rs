@@ -329,33 +329,7 @@ impl eframe::App for ScreenRecorderApp {
 
         let painter = ctx.layer_painter(egui::LayerId::background());
 
-        // Overlay suave: escurece de forma sutil apenas a área EXTERNA permitindo ver a tela com clareza
-        if self.is_selecting_area || !is_recording {
-            let dim_color = egui::Color32::from_black_alpha(65);
-            let r = self.area_rect;
-            painter.rect_filled(
-                egui::Rect::from_min_max(screen_rect.min, egui::pos2(screen_rect.max.x, r.min.y)),
-                0.0,
-                dim_color,
-            );
-            painter.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(screen_rect.min.x, r.max.y), screen_rect.max),
-                0.0,
-                dim_color,
-            );
-            painter.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(screen_rect.min.x, r.min.y), egui::pos2(r.min.x, r.max.y)),
-                0.0,
-                dim_color,
-            );
-            painter.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(r.max.x, r.min.y), egui::pos2(screen_rect.max.x, r.max.y)),
-                0.0,
-                dim_color,
-            );
-        }
-
-        // Borda elegante da área de captura
+        // Only draw the selection rectangle border and corner handles (no black overlay covering the screen)
         let stroke = egui::Stroke::new(2.0, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
@@ -428,7 +402,7 @@ impl eframe::App for ScreenRecorderApp {
                 }
             } else if self.drag_mode != DragMode::None {
                 self.drag_mode = DragMode::None;
-                self.show_presets_menu = true;
+                // Leave user in control, don't auto-open popup
             }
         }
 
