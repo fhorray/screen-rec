@@ -367,16 +367,16 @@ impl GraphicsCaptureApiHandler for WgcHandler {
 
         let yuv = rgba_to_yuv420p_crop(rgba_data, row_pitch, frame_w, frame_h, &self.flags.config.area);
 
-        if let Some(encoder) = &mut self.encoder {
-            if let Ok(bitstream) = encoder.encode(&yuv) {
+        if let Some(encoder) = &mut self.encoder
+            && let Ok(bitstream) = encoder.encode(&yuv) {
                 let stream_bytes = bitstream.to_vec();
                 if !stream_bytes.is_empty() {
                     let (avcc_data, sps, pps, is_key) = split_annex_b_to_avcc(&stream_bytes);
 
                     // Inicializa o arquivo MP4 assim que os parâmetros SPS/PPS estiverem disponíveis
-                    if !self.is_initialized {
-                        if !sps.is_empty() && !pps.is_empty() {
-                            if let Ok(file) = File::create(&self.flags.output_path) {
+                    if !self.is_initialized
+                        && !sps.is_empty() && !pps.is_empty()
+                            && let Ok(file) = File::create(&self.flags.output_path) {
                                 let writer = BufWriter::new(file);
                                 if let Ok(mut mp4_writer) = mp4::Mp4Writer::write_start(
                                     writer,
@@ -408,11 +408,9 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                                     self.is_initialized = true;
                                 }
                             }
-                        }
-                    }
 
-                    if let Some(writer) = &mut self.mp4_writer {
-                        if !avcc_data.is_empty() {
+                    if let Some(writer) = &mut self.mp4_writer
+                        && !avcc_data.is_empty() {
                             let sample = mp4::Mp4Sample {
                                 start_time: self.frame_count * 1000,
                                 duration: 1000,
@@ -424,10 +422,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                             let _ = writer.write_sample(1u32, &sample);
                             self.frame_count += 1;
                         }
-                    }
                 }
             }
-        }
 
         Ok(())
     }

@@ -303,16 +303,14 @@ impl eframe::App for ScreenRecorderApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut current_hwnd = 0isize;
-        if let Ok(handle) = frame.window_handle() {
-            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+        if let Ok(handle) = frame.window_handle()
+            && let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
                 current_hwnd = win32_handle.hwnd.get();
-                if !self.has_excluded_window {
-                    if window_exclude::exclude_window_from_capture(current_hwnd) {
+                if !self.has_excluded_window
+                    && window_exclude::exclude_window_from_capture(current_hwnd) {
                         self.has_excluded_window = true;
                     }
-                }
             }
-        }
 
         let ctx = ui.ctx().clone();
         if self.controller.is_some() {
@@ -320,7 +318,7 @@ impl eframe::App for ScreenRecorderApp {
         }
 
         let is_recording = self.controller.is_some();
-        let is_paused = self.controller.as_ref().map_or(false, |c| c.is_paused());
+        let is_paused = self.controller.as_ref().is_some_and(|c| c.is_paused());
 
         let border_color = if is_recording {
             if is_paused {
@@ -622,11 +620,10 @@ impl eframe::App for ScreenRecorderApp {
                             ui.painter().rect_filled(rect, 5.0, bg);
                             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "📁", egui::FontId::proportional(11.0), egui::Color32::WHITE);
                         }
-                        if resp.on_hover_text("Open video folder").clicked() {
-                            if let Some(parent) = saved_path.parent() {
+                        if resp.on_hover_text("Open video folder").clicked()
+                            && let Some(parent) = saved_path.parent() {
                                 let _ = std::process::Command::new("explorer").arg(parent).spawn();
                             }
-                        }
                     }
 
                     // Botão Fechar App (X)
