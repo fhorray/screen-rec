@@ -15,3 +15,4 @@ openh264 = "0.9.9"
 raw-window-handle = "0.6.2"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Graphics_Dxgi"] }
 windows-capture = "2.0.1"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

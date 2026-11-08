@@ -3140,6 +3140,7 @@ dependencies = [
  "raw-window-handle",
  "windows",
  "windows-capture",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

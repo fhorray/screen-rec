@@ -53,14 +53,12 @@ struct ScreenRecorderApp {
     status_message: String,
     last_saved_file: Option<PathBuf>,
     has_excluded_window: bool,
-
-    bar_pos: egui::Pos2,
+    last_passthrough_state: Option<bool>,
 }
 
 impl Default for ScreenRecorderApp {
     fn default() -> Self {
         Self {
-            // Drag to select comes ENABLED BY DEFAULT
             is_selecting_area: true,
             drag_mode: DragMode::None,
             drag_start: egui::Pos2::ZERO,
@@ -75,7 +73,7 @@ impl Default for ScreenRecorderApp {
             status_message: "Ready".to_string(),
             last_saved_file: None,
             has_excluded_window: false,
-            bar_pos: egui::pos2(24.0, 24.0),
+            last_passthrough_state: None,
         }
     }
 }
@@ -299,17 +297,17 @@ fn draw_gear_icon(ui: &mut egui::Ui, active: bool) -> egui::Response {
 }
 
 impl eframe::App for ScreenRecorderApp {
-    // ESSENCIAL: define fundo da janela nativa como 100% transparente para permitir ver a tela do usuário
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if !self.has_excluded_window {
-            if let Ok(handle) = frame.window_handle() {
-                if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
-                    let hwnd = win32_handle.hwnd.get();
-                    if window_exclude::exclude_window_from_capture(hwnd) {
+        let mut current_hwnd = 0isize;
+        if let Ok(handle) = frame.window_handle() {
+            if let RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                current_hwnd = win32_handle.hwnd.get();
+                if !self.has_excluded_window {
+                    if window_exclude::exclude_window_from_capture(current_hwnd) {
                         self.has_excluded_window = true;
                     }
                 }
@@ -321,12 +319,9 @@ impl eframe::App for ScreenRecorderApp {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
 
-        let screen_rect = ctx.content_rect();
         let is_recording = self.controller.is_some();
         let is_paused = self.controller.as_ref().map_or(false, |c| c.is_paused());
 
-        // Cor da borda:
-        // Vermelho gravando | Amarelo pausado | Verde pronto
         let border_color = if is_recording {
             if is_paused {
                 egui::Color32::from_rgb(245, 158, 11)
@@ -339,7 +334,7 @@ impl eframe::App for ScreenRecorderApp {
 
         let painter = ctx.layer_painter(egui::LayerId::background());
 
-        // Only draw the selection rectangle border and corner handles (no black overlay covering the screen)
+        // Borda elegante da área de captura
         let stroke = egui::Stroke::new(2.0, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
@@ -363,7 +358,7 @@ impl eframe::App for ScreenRecorderApp {
             );
         }
 
-        // Ícone / Handle de arrastar (Drag to Move) no centro da área selecionada
+        // Handle central de movimento
         let center = self.area_rect.center();
         let center_handle_rect = egui::Rect::from_center_size(center, egui::vec2(36.0, 36.0));
         painter.circle_filled(center, 18.0, egui::Color32::from_black_alpha(200));
@@ -376,7 +371,7 @@ impl eframe::App for ScreenRecorderApp {
             egui::Color32::WHITE,
         );
 
-        // Badge de resolução sutil
+        // Badge de resolução
         let size_badge_text = format!("{:.0} × {:.0}", self.area_rect.width(), self.area_rect.height());
         let badge_pos = self.area_rect.left_top() + egui::vec2(6.0, 6.0);
         painter.rect_filled(
@@ -391,6 +386,12 @@ impl eframe::App for ScreenRecorderApp {
             egui::FontId::proportional(11.0),
             egui::Color32::from_gray(230),
         );
+
+        // Retângulo delimitador da barra de ferramentas para hit-testing
+        let bar_pos = egui::pos2(24.0, 24.0);
+        let toolbar_rect = egui::Rect::from_min_size(bar_pos, egui::vec2(220.0, 42.0));
+        let presets_pop_rect = egui::Rect::from_min_size(bar_pos + egui::vec2(44.0, 36.0), egui::vec2(180.0, 160.0));
+        let settings_pop_rect = egui::Rect::from_min_size(bar_pos + egui::vec2(96.0, 36.0), egui::vec2(200.0, 120.0));
 
         // Interação de Arrastar para selecionar área, mover ou ajustar bordas
         if self.is_selecting_area && !is_recording {
@@ -500,11 +501,42 @@ impl eframe::App for ScreenRecorderApp {
             }
         }
 
+        // --- CONTROLE DINÂMICO DE CLICK-THROUGH NO WINDOWS ---
+        // Quando gravando (ou quando o mouse estiver fora dos controles/alças), as janelas do Windows recebem cliques normalmente!
+        if current_hwnd != 0 {
+            let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
+            let is_hovering_interactive_part = if let Some(pos) = pointer_pos {
+                let over_toolbar = toolbar_rect.contains(pos);
+                let over_presets = self.show_presets_menu && presets_pop_rect.contains(pos);
+                let over_settings = self.show_settings && settings_pop_rect.contains(pos);
+                let over_center_handle = center_handle_rect.contains(pos);
+                let over_crop_boundary = !is_recording && self.is_selecting_area && (
+                    self.area_rect.expand(6.0).contains(pos) && !self.area_rect.shrink(6.0).contains(pos)
+                );
+
+                over_toolbar || over_presets || over_settings || over_center_handle || over_crop_boundary
+            } else {
+                false
+            };
+
+            // Durante a gravação, somente a barra de ferramentas intercepta cliques (o resto da tela passa direto para o Windows!)
+            let should_pass_through = if is_recording {
+                !is_hovering_interactive_part
+            } else {
+                !is_hovering_interactive_part && self.drag_mode == DragMode::None
+            };
+
+            if self.last_passthrough_state != Some(should_pass_through) {
+                window_exclude::set_click_through(current_hwnd, should_pass_through);
+                self.last_passthrough_state = Some(should_pass_through);
+            }
+        }
+
         // --- BARRA FLUTUANTE (Capsule Bar) ---
         egui::Window::new("micro_capsule_bar")
             .title_bar(false)
             .resizable(false)
-            .current_pos(self.bar_pos)
+            .current_pos(bar_pos)
             .frame(
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(18, 18, 22))
@@ -541,7 +573,6 @@ impl eframe::App for ScreenRecorderApp {
                         }
                     }
 
-                    // Divisor
                     ui.painter().vline(ui.cursor().min.x + 2.0, ui.cursor().y_range(), egui::Stroke::new(1.0, egui::Color32::from_gray(40)));
                     ui.add_space(5.0);
 
@@ -587,7 +618,7 @@ impl eframe::App for ScreenRecorderApp {
             egui::Window::new("presets_pop")
                 .title_bar(false)
                 .resizable(false)
-                .current_pos(self.bar_pos + egui::vec2(44.0, 36.0))
+                .current_pos(bar_pos + egui::vec2(44.0, 36.0))
                 .frame(
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(22, 22, 26))
@@ -620,6 +651,7 @@ impl eframe::App for ScreenRecorderApp {
                     }
 
                     if let Some(p) = clicked_preset {
+                        let screen_rect = ctx.content_rect();
                         self.apply_preset(p, screen_rect.size());
                         self.show_presets_menu = false;
                         self.is_selecting_area = false;
@@ -632,7 +664,7 @@ impl eframe::App for ScreenRecorderApp {
             egui::Window::new("settings_pop")
                 .title_bar(false)
                 .resizable(false)
-                .current_pos(self.bar_pos + egui::vec2(96.0, 36.0))
+                .current_pos(bar_pos + egui::vec2(96.0, 36.0))
                 .frame(
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(22, 22, 26))
@@ -666,7 +698,7 @@ impl eframe::App for ScreenRecorderApp {
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
-        renderer: eframe::Renderer::Glow, // Uses OpenGL/Glow for true transparent background on Windows
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_maximized(true)
             .with_decorations(false)
