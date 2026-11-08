@@ -53,7 +53,8 @@ struct ScreenRecorderApp {
 impl Default for ScreenRecorderApp {
     fn default() -> Self {
         Self {
-            is_selecting_area: false,
+            // Drag to select comes ENABLED BY DEFAULT
+            is_selecting_area: true,
             drag_mode: DragMode::None,
             drag_start: egui::Pos2::ZERO,
             area_rect: egui::Rect::from_min_size(egui::pos2(120.0, 100.0), egui::vec2(1280.0, 720.0)),
@@ -64,7 +65,7 @@ impl Default for ScreenRecorderApp {
             show_settings: false,
             show_presets_menu: false,
             controller: None,
-            status_message: "Pronto".to_string(),
+            status_message: "Ready".to_string(),
             last_saved_file: None,
             has_excluded_window: false,
             bar_pos: egui::pos2(24.0, 24.0),
@@ -131,13 +132,13 @@ impl ScreenRecorderApp {
         match RecorderController::start(config) {
             Ok(ctrl) => {
                 self.controller = Some(ctrl);
-                self.status_message = "Gravando".to_string();
+                self.status_message = "Recording".to_string();
                 self.is_selecting_area = false;
                 self.show_presets_menu = false;
                 self.show_settings = false;
             }
             Err(e) => {
-                self.status_message = format!("Erro: {}", e);
+                self.status_message = format!("Error: {}", e);
             }
         }
     }
@@ -146,9 +147,9 @@ impl ScreenRecorderApp {
         if let Some(ctrl) = &self.controller {
             let is_paused = ctrl.toggle_pause();
             if is_paused {
-                self.status_message = "Pausado".to_string();
+                self.status_message = "Paused".to_string();
             } else {
-                self.status_message = "Gravando".to_string();
+                self.status_message = "Recording".to_string();
             }
         }
     }
@@ -157,21 +158,21 @@ impl ScreenRecorderApp {
         if let Some(ctrl) = self.controller.take() {
             match ctrl.stop() {
                 Ok(path) => {
-                    self.status_message = "Salvo".to_string();
+                    self.status_message = "Saved".to_string();
                     if let Some(parent) = path.parent() {
                         let _ = std::process::Command::new("explorer").arg(parent).spawn();
                     }
                     self.last_saved_file = Some(path);
                 }
                 Err(e) => {
-                    self.status_message = format!("Erro: {}", e);
+                    self.status_message = format!("Error: {}", e);
                 }
             }
         }
     }
 }
 
-// Helpers de desenho vetorial limpo para botões compactos
+// Helpers de desenho vetorial para botões
 fn draw_play_icon(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
@@ -183,7 +184,6 @@ fn draw_play_icon(ui: &mut egui::Ui) -> egui::Response {
         };
         ui.painter().rect_filled(rect, 12.0, bg);
 
-        // Triângulo de Play centralizado
         let c = rect.center();
         let points = vec![
             c + egui::vec2(-4.0, -5.0),
@@ -208,7 +208,6 @@ fn draw_pause_icon(ui: &mut egui::Ui, is_paused: bool) -> egui::Response {
 
         let c = rect.center();
         if is_paused {
-            // Desenha triângulo resume
             let points = vec![
                 c + egui::vec2(-3.0, -4.5),
                 c + egui::vec2(5.0, 0.0),
@@ -216,7 +215,6 @@ fn draw_pause_icon(ui: &mut egui::Ui, is_paused: bool) -> egui::Response {
             ];
             ui.painter().add(egui::Shape::convex_polygon(points, egui::Color32::WHITE, egui::Stroke::NONE));
         } else {
-            // Desenha duas barras de pause
             ui.painter().rect_filled(egui::Rect::from_center_size(c + egui::vec2(-3.5, 0.0), egui::vec2(2.5, 9.0)), 1.0, egui::Color32::WHITE);
             ui.painter().rect_filled(egui::Rect::from_center_size(c + egui::vec2(3.5, 0.0), egui::vec2(2.5, 9.0)), 1.0, egui::Color32::WHITE);
         }
@@ -250,7 +248,6 @@ fn draw_crop_icon(ui: &mut egui::Ui, active: bool, label_text: &str) -> egui::Re
         };
         ui.painter().rect_filled(rect, 6.0, bg);
 
-        // Ícone retangular de seleção
         let icon_rect = egui::Rect::from_center_size(rect.left_center() + egui::vec2(12.0, 0.0), egui::vec2(10.0, 8.0));
         ui.painter().rect_stroke(
             icon_rect,
@@ -259,7 +256,6 @@ fn draw_crop_icon(ui: &mut egui::Ui, active: bool, label_text: &str) -> egui::Re
             egui::StrokeKind::Outside,
         );
 
-        // Texto do Preset
         ui.painter().text(
             rect.left_center() + egui::vec2(22.0, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -286,7 +282,6 @@ fn draw_gear_icon(ui: &mut egui::Ui, active: bool) -> egui::Response {
 
         let c = rect.center();
         let color = if active { egui::Color32::WHITE } else { egui::Color32::from_gray(180) };
-        // Engrenagem limpa com anel e dentes
         ui.painter().circle_stroke(c, 4.0, egui::Stroke::new(1.4, color));
         ui.painter().circle_filled(c, 1.5, color);
     }
@@ -294,6 +289,11 @@ fn draw_gear_icon(ui: &mut egui::Ui, active: bool) -> egui::Response {
 }
 
 impl eframe::App for ScreenRecorderApp {
+    // ESSENCIAL: define fundo da janela nativa como 100% transparente para permitir ver a tela do usuário
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if !self.has_excluded_window {
             if let Ok(handle) = frame.window_handle() {
@@ -316,7 +316,7 @@ impl eframe::App for ScreenRecorderApp {
         let is_paused = self.controller.as_ref().map_or(false, |c| c.is_paused());
 
         // Cor da borda:
-        // Gravando = Vermelho Vivo | Pausado = Âmbar | Pronto = Verde Suave
+        // Vermelho gravando | Amarelo pausado | Verde pronto
         let border_color = if is_recording {
             if is_paused {
                 egui::Color32::from_rgb(245, 158, 11)
@@ -329,9 +329,9 @@ impl eframe::App for ScreenRecorderApp {
 
         let painter = ctx.layer_painter(egui::LayerId::background());
 
-        // Overlay suave no fundo (escurece apenas a área externa)
+        // Overlay suave: escurece de forma sutil apenas a área EXTERNA permitindo ver a tela com clareza
         if self.is_selecting_area || !is_recording {
-            let dim_color = egui::Color32::from_black_alpha(90);
+            let dim_color = egui::Color32::from_black_alpha(65);
             let r = self.area_rect;
             painter.rect_filled(
                 egui::Rect::from_min_max(screen_rect.min, egui::pos2(screen_rect.max.x, r.min.y)),
@@ -355,11 +355,11 @@ impl eframe::App for ScreenRecorderApp {
             );
         }
 
-        // Borda ultra fina e limpa
-        let stroke = egui::Stroke::new(1.8, border_color);
+        // Borda elegante da área de captura
+        let stroke = egui::Stroke::new(2.0, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-        // Marcadores minimalistas nos 4 cantos
+        // Marcadores nos 4 cantos
         let corners = [
             self.area_rect.left_top(),
             self.area_rect.right_top(),
@@ -368,29 +368,29 @@ impl eframe::App for ScreenRecorderApp {
         ];
         for c in corners {
             painter.rect_filled(
-                egui::Rect::from_center_size(c, egui::vec2(5.0, 5.0)),
+                egui::Rect::from_center_size(c, egui::vec2(6.0, 6.0)),
                 1.0,
                 border_color,
             );
         }
 
-        // Badge de resolução super discreto
+        // Badge de resolução sutil
         let size_badge_text = format!("{:.0} × {:.0}", self.area_rect.width(), self.area_rect.height());
         let badge_pos = self.area_rect.left_top() + egui::vec2(6.0, 6.0);
         painter.rect_filled(
-            egui::Rect::from_min_size(badge_pos, egui::vec2(68.0, 16.0)),
+            egui::Rect::from_min_size(badge_pos, egui::vec2(72.0, 18.0)),
             3.0,
-            egui::Color32::from_black_alpha(170),
+            egui::Color32::from_black_alpha(180),
         );
         painter.text(
-            badge_pos + egui::vec2(34.0, 8.0),
+            badge_pos + egui::vec2(36.0, 9.0),
             egui::Align2::CENTER_CENTER,
             size_badge_text,
-            egui::FontId::proportional(10.0),
-            egui::Color32::from_gray(210),
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_gray(230),
         );
 
-        // Arrastar e redimensionar a área na tela
+        // Interação de Arrastar para selecionar área
         if self.is_selecting_area && !is_recording {
             let pointer = ctx.input(|i| i.pointer.clone());
             if pointer.primary_down() {
@@ -432,15 +432,15 @@ impl eframe::App for ScreenRecorderApp {
             }
         }
 
-        // --- BARRA FLUTUANTE DISCRETA E ELEGANTE (Micro Capsule) ---
+        // --- BARRA FLUTUANTE (Capsule Bar) ---
         egui::Window::new("micro_capsule_bar")
             .title_bar(false)
             .resizable(false)
             .current_pos(self.bar_pos)
             .frame(
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(16, 16, 18))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 38, 44)))
+                    .fill(egui::Color32::from_rgb(18, 18, 22))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 52)))
                     .corner_radius(16.0)
                     .inner_margin(egui::Margin::symmetric(6, 4))
             )
@@ -449,14 +449,14 @@ impl eframe::App for ScreenRecorderApp {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
                     if !is_recording {
-                        if draw_play_icon(ui).on_hover_text("Gravar").clicked() {
+                        if draw_play_icon(ui).on_hover_text("Record").clicked() {
                             self.start_recording();
                         }
                     } else {
-                        if draw_pause_icon(ui, is_paused).on_hover_text(if is_paused { "Retomar" } else { "Pausar" }).clicked() {
+                        if draw_pause_icon(ui, is_paused).on_hover_text(if is_paused { "Resume" } else { "Pause" }).clicked() {
                             self.toggle_pause();
                         }
-                        if draw_stop_icon(ui).on_hover_text("Parar").clicked() {
+                        if draw_stop_icon(ui).on_hover_text("Stop").clicked() {
                             self.stop_recording();
                         }
 
@@ -473,8 +473,8 @@ impl eframe::App for ScreenRecorderApp {
                         }
                     }
 
-                    // Divisor sutil
-                    ui.painter().vline(ui.cursor().min.x + 2.0, ui.cursor().y_range(), egui::Stroke::new(1.0, egui::Color32::from_gray(35)));
+                    // Divisor
+                    ui.painter().vline(ui.cursor().min.x + 2.0, ui.cursor().y_range(), egui::Stroke::new(1.0, egui::Color32::from_gray(40)));
                     ui.add_space(5.0);
 
                     // Dropdown de Área
@@ -483,20 +483,20 @@ impl eframe::App for ScreenRecorderApp {
                         AreaPreset::P1080p => "1080p",
                         AreaPreset::P720p => "720p",
                         AreaPreset::Square => "1:1",
-                        AreaPreset::Custom => "Área",
+                        AreaPreset::Custom => "Area",
                     };
                     if draw_crop_icon(ui, self.show_presets_menu || self.is_selecting_area, preset_text).clicked() {
                         self.show_presets_menu = !self.show_presets_menu;
                         self.show_settings = false;
                     }
 
-                    // Botão Configurações
-                    if draw_gear_icon(ui, self.show_settings).on_hover_text("Configurações").clicked() {
+                    // Botão Settings
+                    if draw_gear_icon(ui, self.show_settings).on_hover_text("Settings").clicked() {
                         self.show_settings = !self.show_settings;
                         self.show_presets_menu = false;
                     }
 
-                    // Atalho Pasta do Vídeo
+                    // Botão Pasta
                     if let Some(saved_path) = &self.last_saved_file {
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 24.0), egui::Sense::click());
                         if ui.is_rect_visible(rect) {
@@ -505,7 +505,7 @@ impl eframe::App for ScreenRecorderApp {
                             ui.painter().rect_filled(rect, 5.0, bg);
                             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "📁", egui::FontId::proportional(11.0), egui::Color32::WHITE);
                         }
-                        if resp.on_hover_text("Abrir pasta do vídeo").clicked() {
+                        if resp.on_hover_text("Open video folder").clicked() {
                             if let Some(parent) = saved_path.parent() {
                                 let _ = std::process::Command::new("explorer").arg(parent).spawn();
                             }
@@ -522,8 +522,8 @@ impl eframe::App for ScreenRecorderApp {
                 .current_pos(self.bar_pos + egui::vec2(44.0, 36.0))
                 .frame(
                     egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(20, 20, 24))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)))
+                        .fill(egui::Color32::from_rgb(22, 22, 26))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 52)))
                         .corner_radius(8.0)
                         .inner_margin(6.0)
                 )
@@ -531,7 +531,7 @@ impl eframe::App for ScreenRecorderApp {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
 
                     let mut clicked_preset = None;
-                    if ui.selectable_label(self.selected_preset == AreaPreset::FullScreen, "🖥  Tela Cheia").clicked() {
+                    if ui.selectable_label(self.selected_preset == AreaPreset::FullScreen, "🖥  Full Screen").clicked() {
                         clicked_preset = Some(AreaPreset::FullScreen);
                     }
                     if ui.selectable_label(self.selected_preset == AreaPreset::P1080p, "📺  1920 × 1080 (16:9)").clicked() {
@@ -540,13 +540,13 @@ impl eframe::App for ScreenRecorderApp {
                     if ui.selectable_label(self.selected_preset == AreaPreset::P720p, "💻  1280 × 720 (16:9)").clicked() {
                         clicked_preset = Some(AreaPreset::P720p);
                     }
-                    if ui.selectable_label(self.selected_preset == AreaPreset::Square, "⬛  1:1 (Quadrado)").clicked() {
+                    if ui.selectable_label(self.selected_preset == AreaPreset::Square, "⬛  1:1 (Square)").clicked() {
                         clicked_preset = Some(AreaPreset::Square);
                     }
 
                     ui.separator();
 
-                    if ui.selectable_label(self.is_selecting_area, "✂  Arrastar Área na Tela").clicked() {
+                    if ui.selectable_label(self.is_selecting_area, "✂  Drag to Select Area").clicked() {
                         self.is_selecting_area = true;
                         self.show_presets_menu = false;
                     }
@@ -559,7 +559,7 @@ impl eframe::App for ScreenRecorderApp {
                 });
         }
 
-        // --- MENU FLUTUANTE DE CONFIGURAÇÕES ---
+        // --- MENU FLUTUANTE DE SETTINGS ---
         if self.show_settings {
             egui::Window::new("settings_pop")
                 .title_bar(false)
@@ -567,18 +567,18 @@ impl eframe::App for ScreenRecorderApp {
                 .current_pos(self.bar_pos + egui::vec2(96.0, 36.0))
                 .frame(
                     egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(20, 20, 24))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 42, 48)))
+                        .fill(egui::Color32::from_rgb(22, 22, 26))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 52)))
                         .corner_radius(8.0)
                         .inner_margin(8.0)
                 )
                 .show(&ctx, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
-                    ui.label(egui::RichText::new("Opções de Gravação").small().strong().color(egui::Color32::from_gray(180)));
+                    ui.label(egui::RichText::new("Recording Settings").small().strong().color(egui::Color32::from_gray(180)));
                     ui.separator();
 
-                    ui.checkbox(&mut self.record_mic, "Microfone");
-                    ui.checkbox(&mut self.record_system_audio, "Som do Sistema");
+                    ui.checkbox(&mut self.record_mic, "Microphone");
+                    ui.checkbox(&mut self.record_system_audio, "System Audio");
 
                     ui.horizontal(|ui| {
                         ui.label("FPS:");
@@ -589,7 +589,7 @@ impl eframe::App for ScreenRecorderApp {
                     ui.label(
                         egui::RichText::new(format!("Status: {}", self.status_message))
                             .small()
-                            .color(egui::Color32::from_gray(120)),
+                            .color(egui::Color32::from_gray(130)),
                     );
                 });
         }
