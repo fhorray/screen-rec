@@ -395,7 +395,9 @@ impl eframe::App for ScreenRecorderApp {
         // Interação de Arrastar para selecionar área, mover ou ajustar bordas
         if self.is_selecting_area && !is_recording {
             let pointer = ctx.input(|i| i.pointer.clone());
-            if pointer.primary_down() {
+            let pointer_over_ui = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
+
+            if pointer.primary_down() && !pointer_over_ui {
                 if let Some(pos) = pointer.interact_pos() {
                     match self.drag_mode {
                         DragMode::None => {
