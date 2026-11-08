@@ -334,58 +334,66 @@ impl eframe::App for ScreenRecorderApp {
 
         let painter = ctx.layer_painter(egui::LayerId::background());
 
-        // Borda elegante da área de captura
-        let stroke = egui::Stroke::new(2.0, border_color);
+        // Borda elegante da área de captura: bem fininha (1.0) durante gravação, ou 2.0 em repouso
+        let border_thickness = if is_recording { 1.0 } else { 2.0 };
+        let stroke = egui::Stroke::new(border_thickness, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-        // Marcadores nos 4 cantos e no meio das 4 bordas para redimensionamento
-        let handle_sz = egui::vec2(7.0, 7.0);
-        let handles = [
-            self.area_rect.left_top(),
-            self.area_rect.right_top(),
-            self.area_rect.left_bottom(),
-            self.area_rect.right_bottom(),
-            self.area_rect.center_top(),
-            self.area_rect.center_bottom(),
-            self.area_rect.left_center(),
-            self.area_rect.right_center(),
-        ];
-        for h in handles {
+        // Marcadores e arrasto central: visíveis apenas quando NÃO está gravando
+        let center = self.area_rect.center();
+        let center_handle_rect = if !is_recording {
+            let handle_sz = egui::vec2(7.0, 7.0);
+            let handles = [
+                self.area_rect.left_top(),
+                self.area_rect.right_top(),
+                self.area_rect.left_bottom(),
+                self.area_rect.right_bottom(),
+                self.area_rect.center_top(),
+                self.area_rect.center_bottom(),
+                self.area_rect.left_center(),
+                self.area_rect.right_center(),
+            ];
+            for h in handles {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(h, handle_sz),
+                    1.0,
+                    border_color,
+                );
+            }
+
+            // Handle central de movimento
+            let handle_rect = egui::Rect::from_center_size(center, egui::vec2(36.0, 36.0));
+            painter.circle_filled(center, 18.0, egui::Color32::from_black_alpha(200));
+            painter.circle_stroke(center, 18.0, egui::Stroke::new(1.8, border_color));
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                "✥",
+                egui::FontId::proportional(18.0),
+                egui::Color32::WHITE,
+            );
+            handle_rect
+        } else {
+            egui::Rect::NOTHING
+        };
+
+        // Badge de resolução (apenas visível quando não está gravando para manter a área totalmente limpa)
+        if !is_recording {
+            let size_badge_text = format!("{:.0} × {:.0}", self.area_rect.width(), self.area_rect.height());
+            let badge_pos = self.area_rect.left_top() + egui::vec2(6.0, 6.0);
             painter.rect_filled(
-                egui::Rect::from_center_size(h, handle_sz),
-                1.0,
-                border_color,
+                egui::Rect::from_min_size(badge_pos, egui::vec2(72.0, 18.0)),
+                3.0,
+                egui::Color32::from_black_alpha(180),
+            );
+            painter.text(
+                badge_pos + egui::vec2(36.0, 9.0),
+                egui::Align2::CENTER_CENTER,
+                size_badge_text,
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_gray(230),
             );
         }
-
-        // Handle central de movimento
-        let center = self.area_rect.center();
-        let center_handle_rect = egui::Rect::from_center_size(center, egui::vec2(36.0, 36.0));
-        painter.circle_filled(center, 18.0, egui::Color32::from_black_alpha(200));
-        painter.circle_stroke(center, 18.0, egui::Stroke::new(1.8, border_color));
-        painter.text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            "✥",
-            egui::FontId::proportional(18.0),
-            egui::Color32::WHITE,
-        );
-
-        // Badge de resolução
-        let size_badge_text = format!("{:.0} × {:.0}", self.area_rect.width(), self.area_rect.height());
-        let badge_pos = self.area_rect.left_top() + egui::vec2(6.0, 6.0);
-        painter.rect_filled(
-            egui::Rect::from_min_size(badge_pos, egui::vec2(72.0, 18.0)),
-            3.0,
-            egui::Color32::from_black_alpha(180),
-        );
-        painter.text(
-            badge_pos + egui::vec2(36.0, 9.0),
-            egui::Align2::CENTER_CENTER,
-            size_badge_text,
-            egui::FontId::proportional(11.0),
-            egui::Color32::from_gray(230),
-        );
 
         // Retângulo delimitador da barra de ferramentas para hit-testing
         let bar_pos = egui::pos2(24.0, 24.0);
