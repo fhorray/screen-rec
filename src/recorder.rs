@@ -8,10 +8,9 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 use windows_capture::{
-    capture::{Context, GraphicsCaptureApiHandler},
+    capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
     frame::Frame,
     graphics_capture_api::InternalCaptureControl,
     monitor::Monitor,
@@ -42,7 +41,7 @@ pub struct RecorderConfig {
 pub struct RecorderController {
     stop_signal: Arc<AtomicBool>,
     pause_signal: Arc<AtomicBool>,
-    handle: Option<thread::JoinHandle<Result<PathBuf, String>>>,
+    control: Option<CaptureControl<WgcHandler, Box<dyn std::error::Error + Send + Sync>>>,
     start_time: Instant,
     output_path: PathBuf,
 }
@@ -51,22 +50,38 @@ impl RecorderController {
     pub fn start(config: RecorderConfig) -> Result<Self, String> {
         let stop_signal = Arc::new(AtomicBool::new(false));
         let pause_signal = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_signal.clone();
-        let pause_clone = pause_signal.clone();
 
         let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let filename = format!("gravacao_{}.mp4", timestamp);
         let output_path = config.output_dir.join(filename);
-        let path_clone = output_path.clone();
 
-        let handle = thread::spawn(move || {
-            run_wgc_pipeline(config, path_clone, stop_clone, pause_clone)
-        });
+        let monitor = Monitor::primary().map_err(|e| format!("Falha ao obter monitor principal: {:?}", e))?;
+
+        let flags = CaptureFlags {
+            config,
+            stop_signal: stop_signal.clone(),
+            pause_signal: pause_signal.clone(),
+            output_path: output_path.clone(),
+        };
+
+        let settings = Settings::new(
+            monitor,
+            CursorCaptureSettings::Default,
+            DrawBorderSettings::WithoutBorder,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Rgba8,
+            flags,
+        );
+
+        let control = WgcHandler::start_free_threaded(settings)
+            .map_err(|e| format!("Erro na captura WGC: {:?}", e))?;
 
         Ok(Self {
             stop_signal,
             pause_signal,
-            handle: Some(handle),
+            control: Some(control),
             start_time: Instant::now(),
             output_path,
         })
@@ -85,14 +100,11 @@ impl RecorderController {
 
     pub fn stop(mut self) -> Result<PathBuf, String> {
         self.stop_signal.store(true, Ordering::SeqCst);
-        if let Some(h) = self.handle.take() {
-            match h.join() {
-                Ok(res) => res,
-                Err(_) => Err("A thread de gravação encerrou inesperadamente".to_string()),
-            }
-        } else {
-            Ok(self.output_path)
+        if let Some(ctrl) = self.control.take() {
+            // Encerra a thread de captura de forma limpa e aguarda o fechamento seguro
+            let _ = ctrl.stop();
         }
+        Ok(self.output_path)
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -133,7 +145,6 @@ impl YUVSource for YuvFrame {
     }
 }
 
-/// Converte RGBA (fornecido por ColorFormat::Rgba8 da WGC) em YUV420p recortado
 fn rgba_to_yuv420p_crop(
     rgba: &[u8],
     frame_width: usize,
@@ -336,35 +347,4 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         }
         Ok(())
     }
-}
-
-fn run_wgc_pipeline(
-    config: RecorderConfig,
-    output_path: PathBuf,
-    stop_signal: Arc<AtomicBool>,
-    pause_signal: Arc<AtomicBool>,
-) -> Result<PathBuf, String> {
-    let monitor = Monitor::primary().map_err(|e| format!("Falha ao obter monitor principal: {:?}", e))?;
-
-    let flags = CaptureFlags {
-        config,
-        stop_signal,
-        pause_signal,
-        output_path: output_path.clone(),
-    };
-
-    let settings = Settings::new(
-        monitor,
-        CursorCaptureSettings::Default,
-        DrawBorderSettings::WithoutBorder,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
-        ColorFormat::Rgba8,
-        flags,
-    );
-
-    WgcHandler::start(settings).map_err(|e| format!("Erro na captura WGC: {:?}", e))?;
-
-    Ok(output_path)
 }

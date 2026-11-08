@@ -167,7 +167,10 @@ impl ScreenRecorderApp {
                 Ok(path) => {
                     self.status_message = "Saved".to_string();
                     if let Some(parent) = path.parent() {
-                        let _ = std::process::Command::new("explorer").arg(parent).spawn();
+                        let parent_path = parent.to_path_buf();
+                        std::thread::spawn(move || {
+                            let _ = std::process::Command::new("explorer").arg(parent_path).spawn();
+                        });
                     }
                     self.last_saved_file = Some(path);
                 }
@@ -661,6 +664,7 @@ impl eframe::App for ScreenRecorderApp {
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Glow, // Uses OpenGL/Glow for true transparent background on Windows
         viewport: egui::ViewportBuilder::default()
             .with_maximized(true)
             .with_decorations(false)

@@ -8,7 +8,7 @@ chrono = "0.4.45"
 cpal = "0.18.2"
 crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
-eframe = "0.37.0"
+eframe = { version = "0.37.0", features = ["glow"] }
 egui = "0.37.0"
 mp4 = "0.14.0"
 openh264 = "0.9.9"
