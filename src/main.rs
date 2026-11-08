@@ -333,7 +333,7 @@ impl eframe::App for ScreenRecorderApp {
         let stroke = egui::Stroke::new(2.0, border_color);
         painter.rect_stroke(self.area_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-        // Marcadores nos 4 cantos
+        // Marcadores nos 4 cantos para redimensionamento
         let corners = [
             self.area_rect.left_top(),
             self.area_rect.right_top(),
@@ -347,6 +347,20 @@ impl eframe::App for ScreenRecorderApp {
                 border_color,
             );
         }
+
+        // Ícone / Handle de arrastar (Drag to Move) no centro da área selecionada
+        let center = self.area_rect.center();
+        let center_handle_rect = egui::Rect::from_center_size(center, egui::vec2(32.0, 32.0));
+        painter.circle_filled(center, 16.0, egui::Color32::from_black_alpha(190));
+        painter.circle_stroke(center, 16.0, egui::Stroke::new(1.5, border_color));
+        // Ícone em cruz de setas de movimento ✥
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            "✥",
+            egui::FontId::proportional(16.0),
+            egui::Color32::WHITE,
+        );
 
         // Badge de resolução sutil
         let size_badge_text = format!("{:.0} × {:.0}", self.area_rect.width(), self.area_rect.height());
@@ -364,7 +378,7 @@ impl eframe::App for ScreenRecorderApp {
             egui::Color32::from_gray(230),
         );
 
-        // Interação de Arrastar para selecionar área
+        // Interação de Arrastar para selecionar área ou mover a área existente
         if self.is_selecting_area && !is_recording {
             let pointer = ctx.input(|i| i.pointer.clone());
             if pointer.primary_down() {
@@ -372,11 +386,12 @@ impl eframe::App for ScreenRecorderApp {
                     match self.drag_mode {
                         DragMode::None => {
                             self.drag_start = pos;
-                            let corner_rect = egui::Rect::from_center_size(self.area_rect.right_bottom(), egui::vec2(24.0, 24.0));
-                            if corner_rect.contains(pos) {
-                                self.drag_mode = DragMode::ResizingCorner;
-                            } else if self.area_rect.contains(pos) {
+                            let corner_rect = egui::Rect::from_center_size(self.area_rect.right_bottom(), egui::vec2(28.0, 28.0));
+                            if center_handle_rect.contains(pos) || self.area_rect.contains(pos) {
+                                // Arrastar pelo meio (ou dentro da área) move toda a área sem precisar selecionar novamente
                                 self.drag_mode = DragMode::Moving;
+                            } else if corner_rect.contains(pos) {
+                                self.drag_mode = DragMode::ResizingCorner;
                             } else {
                                 self.drag_mode = DragMode::NewSelection;
                                 self.area_rect = egui::Rect::from_min_max(pos, pos);
@@ -402,7 +417,6 @@ impl eframe::App for ScreenRecorderApp {
                 }
             } else if self.drag_mode != DragMode::None {
                 self.drag_mode = DragMode::None;
-                // Leave user in control, don't auto-open popup
             }
         }
 
