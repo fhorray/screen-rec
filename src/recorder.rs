@@ -4,14 +4,16 @@ use crate::audio::{AudioPacket, AudioRecorder};
 use chrono::Local;
 use crossbeam_channel::Receiver;
 use mp4::{AacConfig, AudioObjectType, ChannelConfig, SampleFreqIndex};
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode, UsageType};
-use openh264::formats::YUVSource;
 use openh264::OpenH264API;
+use openh264::encoder::{
+    BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode, UsageType,
+};
+use openh264::formats::YUVSource;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use windows_capture::{
     capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
@@ -60,14 +62,19 @@ impl RecorderController {
         let filename = format!("gravacao_{}.mp4", timestamp);
         let output_path = config.output_dir.join(filename);
 
-        let monitor = Monitor::primary().map_err(|e| format!("Falha ao obter monitor principal: {:?}", e))?;
+        let monitor =
+            Monitor::primary().map_err(|e| format!("Falha ao obter monitor principal: {:?}", e))?;
 
         let mut audio_recorder = None;
         let mut audio_rx = None;
 
         if config.record_microphone || config.record_system_audio {
             let mut recorder = AudioRecorder::new();
-            match recorder.start(config.record_microphone, config.record_system_audio, pause_signal.clone()) {
+            match recorder.start(
+                config.record_microphone,
+                config.record_system_audio,
+                pause_signal.clone(),
+            ) {
                 Ok(rx) => {
                     audio_rx = Some(rx);
                     audio_recorder = Some(recorder);
@@ -252,10 +259,19 @@ fn split_annex_b_to_avcc(annex_b: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, bool) {
     let mut nalu_indices = Vec::new();
     let mut i = 0;
     while i < annex_b.len() {
-        if i + 3 < annex_b.len() && annex_b[i] == 0 && annex_b[i + 1] == 0 && annex_b[i + 2] == 0 && annex_b[i + 3] == 1 {
+        if i + 3 < annex_b.len()
+            && annex_b[i] == 0
+            && annex_b[i + 1] == 0
+            && annex_b[i + 2] == 0
+            && annex_b[i + 3] == 1
+        {
             nalu_indices.push((i, 4));
             i += 4;
-        } else if i + 2 < annex_b.len() && annex_b[i] == 0 && annex_b[i + 1] == 0 && annex_b[i + 2] == 1 {
+        } else if i + 2 < annex_b.len()
+            && annex_b[i] == 0
+            && annex_b[i + 1] == 0
+            && annex_b[i + 2] == 1
+        {
             nalu_indices.push((i, 3));
             i += 3;
         } else {
@@ -335,12 +351,38 @@ pub struct WgcHandler {
     target_height: u16,
 }
 
+impl WgcHandler {
+    fn drain_audio_packets(&mut self) {
+        if let (Some(audio_track_id), Some(rx), Some(writer)) = (
+            self.audio_track_id,
+            &self.flags.audio_rx,
+            &mut self.mp4_writer,
+        ) {
+            while let Ok(pkt) = rx.try_recv() {
+                let audio_sample = mp4::Mp4Sample {
+                    start_time: self.audio_sample_time,
+                    duration: pkt.duration_samples,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: mp4::Bytes::from(pkt.data),
+                };
+                let _ = writer.write_sample(audio_track_id, &audio_sample);
+                self.audio_sample_time += pkt.duration_samples as u64;
+            }
+        }
+    }
+}
+
 impl GraphicsCaptureApiHandler for WgcHandler {
     type Flags = CaptureFlags;
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        let fps = if ctx.flags.config.fps == 0 { 30 } else { ctx.flags.config.fps };
+        let fps = if ctx.flags.config.fps == 0 {
+            30
+        } else {
+            ctx.flags.config.fps
+        };
         let frame_interval = Duration::from_millis((1000 / fps) as u64);
 
         let encoder_config = EncoderConfig::new()
@@ -372,26 +414,6 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         })
     }
 
-    fn drain_audio_packets(&mut self) {
-        if let (Some(audio_track_id), Some(rx), Some(writer)) = (
-            self.audio_track_id,
-            &self.flags.audio_rx,
-            &mut self.mp4_writer,
-        ) {
-            while let Ok(pkt) = rx.try_recv() {
-                let audio_sample = mp4::Mp4Sample {
-                    start_time: self.audio_sample_time,
-                    duration: pkt.duration_samples,
-                    rendering_offset: 0,
-                    is_sync: true,
-                    bytes: mp4::Bytes::from(pkt.data),
-                };
-                let _ = writer.write_sample(audio_track_id, &audio_sample);
-                self.audio_sample_time += pkt.duration_samples as u64;
-            }
-        }
-    }
-
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
@@ -413,7 +435,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         }
 
         let now = Instant::now();
-        if self.is_initialized && now.duration_since(self.last_frame_instant) < self.frame_interval {
+        if self.is_initialized && now.duration_since(self.last_frame_instant) < self.frame_interval
+        {
             return Ok(());
         }
         self.last_frame_instant = now;
@@ -437,7 +460,13 @@ impl GraphicsCaptureApiHandler for WgcHandler {
         let row_pitch = buffer.row_pitch() as usize;
         let rgba_data = buffer.as_raw_buffer();
 
-        let yuv = rgba_to_yuv420p_crop(rgba_data, row_pitch, frame_w, frame_h, &self.flags.config.area);
+        let yuv = rgba_to_yuv420p_crop(
+            rgba_data,
+            row_pitch,
+            frame_w,
+            frame_h,
+            &self.flags.config.area,
+        );
 
         if let Some(encoder) = &mut self.encoder {
             if let Ok(bitstream) = encoder.encode(&yuv) {
@@ -501,7 +530,8 @@ impl GraphicsCaptureApiHandler for WgcHandler {
                     if let Some(writer) = &mut self.mp4_writer {
                         if !avcc_data.is_empty() {
                             let total_elapsed = self.start_instant.elapsed();
-                            let effective_elapsed = total_elapsed.saturating_sub(self.total_paused_duration);
+                            let effective_elapsed =
+                                total_elapsed.saturating_sub(self.total_paused_duration);
                             let sample_time_ms = effective_elapsed.as_millis() as u64;
 
                             let duration_ms = if sample_time_ms > self.last_sample_time_ms {
@@ -558,7 +588,7 @@ mod tests {
         let annex_b_data = vec![
             0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1f, // SPS
             0, 0, 0, 1, 0x68, 0xce, 0x38, 0x80, // PPS
-            0, 0, 0, 1, 0x65, 0x88, 0x84,       // IDR slice (type 5)
+            0, 0, 0, 1, 0x65, 0x88, 0x84, // IDR slice (type 5)
         ];
 
         let (avcc, sps, pps, is_key) = split_annex_b_to_avcc(&annex_b_data);
