@@ -10,6 +10,7 @@ crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
 eframe = { version = "0.37.0", features = ["glow"] }
 egui = { version = "0.37.0", features = ["default_fonts"] }
+fdk-aac-rs = "0.1.0"
 mp4 = "0.14.0"
 openh264 = "0.9.9"
 raw-window-handle = "0.6.2"
